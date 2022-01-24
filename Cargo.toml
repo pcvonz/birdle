@@ -6,6 +6,28 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bevy = "0.6.0"
-rand = "0.7.3"
+rand = {version = "0.7.3",  features = ["wasm-bindgen"] }
 anyhow = "1.0.53"
+dict = {git = "https://github.com/freedict/libdict.git"}
+
+[dependencies.bevy]
+default-features = false
+version = "0.6.0"
+features = [
+  # These are the default features:
+  # (keep whichever you like)
+  "render",
+  "bevy_winit",
+  "x11",
+  "filesystem_watcher",
+  # These are other features that may be of interest:
+  # (add any of these that you need)
+  "dds",
+  "serialize",
+  "trace_chrome",
+  "wgpu_trace",
+  "wayland"
+]
+
+[target.wasm32-unknown-unknown]
+runner = "wasm-server-runner"
