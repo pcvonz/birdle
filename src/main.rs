@@ -56,6 +56,7 @@ fn main() {
         .add_system(update_guesses)
         .add_system(check_guesses)
         .add_system(check_keyboard)
+        .add_system(button_system)
         .run();
 }
 
@@ -103,7 +104,7 @@ fn spawn_keyboard(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
         "k",
         "l",
         " ",
-        "⏎",
+        "⬾",
         "z",
         "x",
         "c",
@@ -111,7 +112,7 @@ fn spawn_keyboard(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
         "b",
         "n",
         "m",
-        "⬾"
+        "⏎",
             ];
 
     parent.spawn_bundle(NodeBundle {
@@ -132,7 +133,7 @@ fn spawn_keyboard(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
     }).with_children(|parent| {
     for key in keys {
         parent
-            .spawn_bundle(NodeBundle {
+            .spawn_bundle(ButtonBundle {
                 style: Style {
                     position_type: PositionType::Relative,
                     max_size: Size::new(Val::Px(40.), Val::Px(40.)),
@@ -174,6 +175,38 @@ fn spawn_keyboard(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
         });
     }
     });
+}
+
+fn button_system(
+    mut cell_query: Query<&mut Cell>,
+    mut interaction_query: Query<
+        (&Interaction, &mut UiColor, &Children),
+        (Changed<Interaction>, With<Button>),
+    >,
+    mut state: ResMut<State>,
+    mut text_query: Query<&mut Text>,
+    custom_assets: ResMut<Assets<CustomAsset>>
+) {
+    for (interaction, mut color, children) in interaction_query.iter_mut() {
+        let text = text_query.get_mut(children[0]).unwrap();
+        match *interaction {
+            Interaction::Clicked => {
+
+                let c = text.sections[0].value.chars().next().expect("Char!");
+                if c == '⏎' {
+                    submit_guess(&mut cell_query, &mut state, &custom_assets);
+                } else if c == '⬾' {
+                    state.x -= 1;
+                    handle_letter(&mut cell_query, &mut state, ' ');
+                    state.x -= 1;
+                } else {
+                    handle_letter(&mut cell_query, &mut state, c);
+                }
+            }
+            _ => {
+            }
+        }
+    }
 }
 
 fn spawn_grid(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
@@ -505,39 +538,47 @@ fn update_guesses(
                         handle_letter(&mut query, &mut state, 'z');
                     }
                     Some(KeyCode::Return) => {
-                        if state.x == 5 {
-                            let letters: Vec<&Cell> = query.iter().filter(|cell| {
-                                cell.row == state.y
-                            }).collect();
-                            let mut guess= vec![
-                                String::from("1"),
-                                String::from("2"),
-                                String::from("3"),
-                                String::from("4"),
-                                String::from("5")
-                            ];
-
-                            for letter in letters {
-                                guess[letter.column] = letter.guess.clone().unwrap().to_string();
-                            }
-
-                            let custom_asset = custom_assets.get(&state.handle);
-
-                            if let Some(dict) = custom_asset {
-                                let guessed_word = guess.join("");
-                                if dict.words.contains(&guessed_word) {
-                                    state.guesses.push(guess);
-                                    state.y += 1;
-                                    state.x = 0;
-                                }
-                            }
-                        }
                     }
                     _ => {
+                        submit_guess(&mut query, &mut state, &custom_assets);
                     }
                 };
             }
             _ => {
+            }
+        }
+    }
+}
+
+fn submit_guess(
+    query: &mut Query<&mut Cell>,
+    state: &mut ResMut<State>,
+    custom_assets: &ResMut<Assets<CustomAsset>>,
+    ) {
+    if state.x == 5 {
+        let letters: Vec<&Cell> = query.iter().filter(|cell| {
+            cell.row == state.y
+        }).collect();
+        let mut guess= vec![
+            String::from("1"),
+            String::from("2"),
+            String::from("3"),
+            String::from("4"),
+            String::from("5")
+        ];
+
+        for letter in letters {
+            guess[letter.column] = letter.guess.clone().unwrap().to_string();
+        }
+
+        let custom_asset = custom_assets.get(&state.handle);
+
+        if let Some(dict) = custom_asset {
+            let guessed_word = guess.join("");
+            if dict.words.contains(&guessed_word) {
+                state.guesses.push(guess);
+                state.y += 1;
+                state.x = 0;
             }
         }
     }
