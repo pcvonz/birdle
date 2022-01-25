@@ -1,3 +1,4 @@
+#![feature(derive_default_enum)]
 use bevy::{
     asset::{AssetLoader, LoadContext, LoadedAsset},
     prelude::*,
@@ -6,6 +7,7 @@ use bevy::{
 };
 use rand::Rng;
 use bevy::input::keyboard::KeyboardInput;
+use bevy::ecs::schedule::ShouldRun;
 
 #[derive(Debug, TypeUuid)]
 #[uuid = "39cadc56-aa9c-4543-8640-a018b74b5052"]
@@ -15,6 +17,19 @@ pub struct CustomAsset {
 
 #[derive(Default)]
 pub struct CustomAssetLoader;
+
+#[derive(Default, Debug, PartialEq, Eq)]
+enum GameRunState {
+    Scoring,
+    #[default]
+    Playing,
+}
+
+#[derive(Default)]
+struct RunState {
+    run_state: GameRunState
+}
+
 
 impl AssetLoader for CustomAssetLoader {
     fn load<'a>(
@@ -48,15 +63,40 @@ fn main() {
         })
     .add_plugins(DefaultPlugins)
         .init_resource::<State>()
+        .init_resource::<RunState>()
         .add_asset::<CustomAsset>()
         .init_asset_loader::<CustomAssetLoader>()
         .add_startup_system(setup)
         .add_startup_system(spawn_container)
         .add_system(print_on_load)
-        .add_system(update_guesses)
-        .add_system(check_guesses)
-        .add_system(check_keyboard)
-        .add_system(button_system)
+        .add_system_set(
+            SystemSet::new()
+            .with_system(update_guesses)
+            .label("input")
+        )
+        .add_system_set(
+            SystemSet::new()
+            .with_system(button_system)
+            .label("input")
+        )
+        
+        .add_system_set(
+            SystemSet::new()
+            .with_run_criteria(run_if_scoring)
+            .with_system(check_keyboard)
+            .before("input")
+        )
+        .add_system_set(
+            SystemSet::new()
+            .with_system(update_text)
+            .before("input")
+        )
+        .add_system_set(
+            SystemSet::new()
+            .with_run_criteria(run_if_scoring)
+            .with_system(check_guesses)
+            .label("input")
+        )
         .run();
 }
 
@@ -75,11 +115,12 @@ struct Key {
 #[derive(Default, Debug)]
 struct State {
     handle: Handle<CustomAsset>,
-    guesses: Vec<Vec<String>>,
+    guesses: Vec<String>,
     word: Option<String>,
     printed: bool,
-    x: usize,
-    y: usize,
+    guess: String,
+    column: usize,
+    row: usize,
 }
 
 fn spawn_keyboard(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
@@ -180,25 +221,25 @@ fn spawn_keyboard(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
 fn button_system(
     mut cell_query: Query<&mut Cell>,
     mut interaction_query: Query<
-        (&Interaction, &mut UiColor, &Children),
+        (&Interaction, &Children),
         (Changed<Interaction>, With<Button>),
     >,
     mut state: ResMut<State>,
-    mut text_query: Query<&mut Text>,
-    custom_assets: ResMut<Assets<CustomAsset>>
+    mut text_query: Query<&mut Text, With<Key>>,
+    custom_assets: ResMut<Assets<CustomAsset>>,
+    mut run_state: ResMut<RunState>
 ) {
-    for (interaction, mut color, children) in interaction_query.iter_mut() {
+    for (interaction, children) in interaction_query.iter_mut() {
         let text = text_query.get_mut(children[0]).unwrap();
         match *interaction {
             Interaction::Clicked => {
-
                 let c = text.sections[0].value.chars().next().expect("Char!");
                 if c == '⏎' {
-                    submit_guess(&mut cell_query, &mut state, &custom_assets);
+                    submit_guess(&mut state, &custom_assets, &mut run_state);
                 } else if c == '⬾' {
-                    state.x -= 1;
+                    state.column -= 1;
                     handle_letter(&mut cell_query, &mut state, ' ');
-                    state.x -= 1;
+                    state.column -= 1;
                 } else {
                     handle_letter(&mut cell_query, &mut state, c);
                 }
@@ -321,7 +362,7 @@ fn setup(mut state: ResMut<State>, asset_server: Res<AssetServer>) {
 }
 
 fn score_letter(state: &ResMut<State>, letter: &char, row: usize, col: usize) -> Option<u32> {
-    if state.y == row {
+    if state.row == row {
         return None
     } else {
         let mut score = 0;
@@ -348,7 +389,7 @@ fn score_letter(state: &ResMut<State>, letter: &char, row: usize, col: usize) ->
 fn score_key(state: &ResMut<State>, letter: &String) -> Option<u8> {
     if let Some(word) = &state.word {
         let guesses: String = state.guesses.iter().fold(String::new(), |mut guess_set, guess| {
-            guess_set.push_str(guess.join("").as_str());
+            guess_set.push_str(guess.as_str());
             guess_set
         });
         let letter_in_guesses = letter.chars().any(|c| {
@@ -400,10 +441,23 @@ fn check_keyboard(
     }
 }
 
+fn run_if_scoring(
+    mut run_state: ResMut<RunState>,
+) -> ShouldRun
+{
+    if run_state.run_state == GameRunState::Scoring {
+        ShouldRun::Yes
+    } else {
+        ShouldRun::No
+    }
+}
+
+
 fn check_guesses(
     mut text_query: Query<( &Parent, &mut Text, &Cell )>,
     mut p_query: Query<&mut UiColor>,
     state: ResMut<State>,
+    mut run_state: ResMut<RunState>
 ) {
     for ( parent, mut text, cell ) in text_query.iter_mut() {
         if let Some(g) = &cell.guess {
@@ -425,18 +479,36 @@ fn check_guesses(
                     println!("{}", err);
                 }
             }
-            
         }
     }
+    run_state.run_state = GameRunState::Playing;
+}
+
+fn update_text(
+    mut text_query: Query<( &Parent, &mut Text, &Cell )>,
+    mut run_state: ResMut<RunState>
+) {
+    for ( parent, mut text, cell ) in text_query.iter_mut() {
+        if let Some(g) = &cell.guess {
+            text.sections[0].value = g.to_string();
+        }
+    }
+    run_state.run_state = GameRunState::Playing;
 }
 
 fn handle_letter(query: &mut Query<&mut Cell>, state: &mut ResMut<State>, letter: char) {
     let cell = query.iter_mut().find(|cell| {
-        cell.row == state.y && cell.column == state.x
+        cell.row == state.row && cell.column == state.column
     });
     if let Some(mut c) = cell {
         (*c).guess = Some(letter);
-        state.x += 1;
+        state.column += 1;
+        if letter != ' ' {
+            state.guess.push(letter);
+        } else {
+            state.guess.pop();
+            println!("{}", state.guess);
+        }
     }
 }
 
@@ -444,7 +516,8 @@ fn update_guesses(
     mut query: Query<&mut Cell>,
     mut state: ResMut<State>,
     mut key_evr: EventReader<KeyboardInput>,
-    custom_assets: ResMut<Assets<CustomAsset>>
+    mut run_state: ResMut<RunState>,
+    custom_assets: ResMut<Assets<CustomAsset>>,
     ) {
     use bevy::input::ElementState;
 
@@ -453,10 +526,10 @@ fn update_guesses(
             ElementState::Pressed => {
                 match ev.key_code {
                     Some(KeyCode::Back) => {
-                        if state.x > 0 {
-                            state.x -= 1;
+                        if state.column > 0 {
+                            state.column -= 1;
                             handle_letter(&mut query, &mut state, ' ');
-                            state.x -= 1;
+                            state.column -= 1;
                         }
                     }
                     Some(KeyCode::A) => {
@@ -538,9 +611,9 @@ fn update_guesses(
                         handle_letter(&mut query, &mut state, 'z');
                     }
                     Some(KeyCode::Return) => {
+                        submit_guess(&mut state, &custom_assets, &mut run_state);
                     }
                     _ => {
-                        submit_guess(&mut query, &mut state, &custom_assets);
                     }
                 };
             }
@@ -551,34 +624,22 @@ fn update_guesses(
 }
 
 fn submit_guess(
-    query: &mut Query<&mut Cell>,
     state: &mut ResMut<State>,
     custom_assets: &ResMut<Assets<CustomAsset>>,
+    run_state: &mut ResMut<RunState>
     ) {
-    if state.x == 5 {
-        let letters: Vec<&Cell> = query.iter().filter(|cell| {
-            cell.row == state.y
-        }).collect();
-        let mut guess= vec![
-            String::from("1"),
-            String::from("2"),
-            String::from("3"),
-            String::from("4"),
-            String::from("5")
-        ];
-
-        for letter in letters {
-            guess[letter.column] = letter.guess.clone().unwrap().to_string();
-        }
-
+    println!("{:?}", state);
+    if state.column == 5 {
         let custom_asset = custom_assets.get(&state.handle);
 
         if let Some(dict) = custom_asset {
-            let guessed_word = guess.join("");
-            if dict.words.contains(&guessed_word) {
+            if dict.words.contains(&state.guess) {
+                let guess = state.guess.clone();
                 state.guesses.push(guess);
-                state.y += 1;
-                state.x = 0;
+                state.guess = String::new();
+                state.row += 1;
+                state.column = 0;
+                run_state.run_state = GameRunState::Scoring;
             }
         }
     }
@@ -594,11 +655,9 @@ fn print_on_load(mut state: ResMut<State>, custom_assets: ResMut<Assets<CustomAs
         let num = rand::thread_rng().gen_range(0, dict.words.len() as i32);
         state.printed = true;
         if let Some(word) = dict.words.get(num as usize) {
-            println!("{}", word);
             state.word = Some(word.clone());
         }
     }
-    
 }
 
 fn setup_camera(mut commands: Commands) {
