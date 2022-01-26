@@ -24,8 +24,6 @@ features = [
   # (add any of these that you need)
   "dds",
   "serialize",
-  "trace_chrome",
-  "wgpu_trace",
   "wayland"
 ]
 

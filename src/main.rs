@@ -1,13 +1,11 @@
-#![feature(derive_default_enum)]
 use bevy::{
     asset::{AssetLoader, LoadContext, LoadedAsset},
     prelude::*,
-    reflect::TypeUuid,
+    reflect::{TypeUuid, erased_serde::private::serde::de::value},
     utils::BoxedFuture,
 };
 use rand::Rng;
 use bevy::input::keyboard::KeyboardInput;
-use bevy::ecs::schedule::ShouldRun;
 
 #[derive(Debug, TypeUuid)]
 #[uuid = "39cadc56-aa9c-4543-8640-a018b74b5052"]
@@ -18,18 +16,23 @@ pub struct CustomAsset {
 #[derive(Default)]
 pub struct CustomAssetLoader;
 
-#[derive(Default, Debug, PartialEq, Eq)]
-enum GameRunState {
-    Scoring,
-    #[default]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+enum AppState {
+    Init,
     Playing,
+    Loading,
+    CheckWin,
+    Win,
+    Fail
 }
 
-#[derive(Default)]
-struct RunState {
-    run_state: GameRunState
+struct WinNoticeMenu { 
+    win_notice_entity: Entity 
 }
 
+struct GameContainer {
+    game_container_entity: Entity
+}
 
 impl AssetLoader for CustomAssetLoader {
     fn load<'a>(
@@ -62,43 +65,100 @@ fn main() {
             ..Default::default()
         })
     .add_plugins(DefaultPlugins)
-        .init_resource::<State>()
-        .init_resource::<RunState>()
+        .init_resource::<GameState>()
         .add_asset::<CustomAsset>()
         .init_asset_loader::<CustomAssetLoader>()
-        .add_startup_system(setup)
-        .add_startup_system(spawn_container)
-        .add_system(print_on_load)
+        .add_state(AppState::Init)
         .add_system_set(
-            SystemSet::new()
-            .with_system(update_guesses)
+            SystemSet::on_enter(AppState::Init)
+            .with_system(setup)
+        )
+        .add_system_set(
+            SystemSet::on_update(AppState::Init)
+            .with_system(init_game)
+        )
+        .add_system_set(
+            SystemSet::on_exit(AppState::Init)
+            .with_system(spawn_container)
+        )
+        .add_system_set(
+            SystemSet::on_enter(AppState::Playing)
+            .with_system(update_score)
+        )
+        .add_system_set(
+            SystemSet::on_update(AppState::Fail)
+            .with_system(handle_accept_win)
+        )
+        .add_system_set(
+            SystemSet::on_enter(AppState::Fail)
+            .with_system(cleanup_game_container)
+        )
+        .add_system_set(
+            SystemSet::on_exit(AppState::Fail)
+            .with_system(cleanup_win_notice)
+        )
+        .add_system_set(
+            SystemSet::on_enter(AppState::Fail)
+            .with_system(spawn_win_notice)
+        )
+        .add_system_set(
+            SystemSet::on_update(AppState::Fail)
+            .with_system(show_win_notice)
+        )
+        .add_system_set(
+            SystemSet::on_update(AppState::Win)
+            .with_system(handle_accept_win)
+        )
+        .add_system_set(
+            SystemSet::on_enter(AppState::Win)
+            .with_system(cleanup_game_container)
+        )
+        .add_system_set(
+            SystemSet::on_exit(AppState::Win)
+            .with_system(cleanup_win_notice)
+        )
+        .add_system_set(
+            SystemSet::on_enter(AppState::Win)
+            .with_system(spawn_win_notice)
+        )
+        .add_system_set(
+            SystemSet::on_update(AppState::Win)
+            .with_system(show_win_notice)
+        )
+        .add_system_set(
+            SystemSet::on_enter(AppState::CheckWin)
+            .with_system(check_win)
+        )
+        .add_system_set(
+            SystemSet::on_update(AppState::Playing)
+            .with_system(handle_keyboard)
             .label("input")
         )
         .add_system_set(
-            SystemSet::new()
-            .with_system(button_system)
+            SystemSet::on_update(AppState::Playing)
+            .with_system(handle_button)
             .label("input")
         )
-        
         .add_system_set(
-            SystemSet::new()
-            .with_run_criteria(run_if_scoring)
-            .with_system(check_keyboard)
-            .before("input")
-        )
-        .add_system_set(
-            SystemSet::new()
+            SystemSet::on_update(AppState::Playing)
             .with_system(update_text)
             .before("input")
         )
         .add_system_set(
-            SystemSet::new()
-            .with_run_criteria(run_if_scoring)
+            SystemSet::on_update(AppState::Loading)
+            .with_system(check_keyboard)
+            .before("input")
+        )
+        .add_system_set(
+            SystemSet::on_update(AppState::Loading)
             .with_system(check_guesses)
-            .label("input")
         )
         .run();
 }
+
+#[derive(Component, Debug)]
+struct Score { }
+
 
 #[derive(Component, Debug)]
 struct Cell {
@@ -113,7 +173,7 @@ struct Key {
 }
 
 #[derive(Default, Debug)]
-struct State {
+struct GameState {
     handle: Handle<CustomAsset>,
     guesses: Vec<String>,
     word: Option<String>,
@@ -121,7 +181,11 @@ struct State {
     guess: String,
     column: usize,
     row: usize,
+    wins: u32
 }
+
+#[derive(Component, Debug)]
+struct WinNotice();
 
 fn spawn_keyboard(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
     let keys = vec![
@@ -218,36 +282,98 @@ fn spawn_keyboard(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
     });
 }
 
-fn button_system(
+fn handle_button(
     mut cell_query: Query<&mut Cell>,
     mut interaction_query: Query<
         (&Interaction, &Children),
         (Changed<Interaction>, With<Button>),
     >,
-    mut state: ResMut<State>,
+    mut state: ResMut<GameState>,
     mut text_query: Query<&mut Text, With<Key>>,
     custom_assets: ResMut<Assets<CustomAsset>>,
-    mut run_state: ResMut<RunState>
+    mut app_state: ResMut<State<AppState>>,
 ) {
     for (interaction, children) in interaction_query.iter_mut() {
-        let text = text_query.get_mut(children[0]).unwrap();
-        match *interaction {
-            Interaction::Clicked => {
-                let c = text.sections[0].value.chars().next().expect("Char!");
-                if c == '⏎' {
-                    submit_guess(&mut state, &custom_assets, &mut run_state);
-                } else if c == '⬾' {
-                    state.column -= 1;
-                    handle_letter(&mut cell_query, &mut state, ' ');
-                    state.column -= 1;
-                } else {
-                    handle_letter(&mut cell_query, &mut state, c);
+        for children in children.iter() {
+            if let Ok(text) = text_query.get_mut(*children) {
+                match *interaction {
+                    Interaction::Clicked => {
+                        let c = text.sections[0].value.chars().next().expect("Char!");
+                        if c == '⏎' {
+                            submit_guess(&mut state, &custom_assets, &mut app_state);
+                        } else if c == '⬾' {
+                            state.column -= 1;
+                            handle_letter(&mut cell_query, &mut state, ' ');
+                            state.column -= 1;
+                        } else {
+                            handle_letter(&mut cell_query, &mut state, c);
+                        }
+                    }
+                    _ => {
+                    }
                 }
-            }
-            _ => {
             }
         }
     }
+}
+
+fn spawn_win_notice(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let win_notice_entity = commands.spawn_bundle(NodeBundle {
+            style: Style {
+                position_type: PositionType::Absolute,
+                position: Rect {
+                    ..Default::default()
+                },
+                size: Size::new(Val::Percent(100.), Val::Percent(100.)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                flex_direction: FlexDirection::Column,
+                align_content: AlignContent::Center,
+                ..Default::default()
+            },
+            color: Color::rgb(1.0, 1.0, 1.0).into(),
+            ..Default::default()
+        }).with_children(|parent| {
+            parent.spawn_bundle(ButtonBundle {
+                style: Style {
+                    position_type: PositionType::Relative,
+                    size: Size::new(Val::Percent(100.0), Val::Percent(100.0)),
+                    margin: Rect {
+                        top: Val::Px(5.),
+                        left: Val::Px(5.),
+                        right: Val::Px(5.),
+                        bottom: Val::Px(5.),
+                    },
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    align_content: AlignContent::Center,
+                    ..Default::default()
+                },
+                color: Color::rgb(1.0, 1.0, 1.0).into(),
+                ..Default::default()
+            })
+            .insert(WinNotice {})
+            .with_children(|button_parent| {
+                button_parent.spawn_bundle(TextBundle {
+                    focus_policy: bevy::ui::FocusPolicy::Pass,
+                    text: Text::with_section(
+                              "",
+                              TextStyle {
+                                  font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                                  font_size: 30.0,
+                                  color: Color::rgb(0.2, 0.2, 0.2),
+                              },
+                              Default::default(),
+                          ),
+                          style: Style {
+                              align_self: AlignSelf::Center,
+                              ..Default::default()
+                          },
+                          ..Default::default()
+                });
+            });
+        }).id();
+    commands.insert_resource(WinNoticeMenu { win_notice_entity});
 }
 
 fn spawn_grid(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
@@ -334,8 +460,58 @@ fn spawn_grid(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
     });
 }
 
+fn spawn_score(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
+    parent.spawn_bundle(NodeBundle {
+        style: Style {
+            position_type: PositionType::Relative,
+            position: Rect {
+                ..Default::default()
+            },
+            flex_wrap: FlexWrap::WrapReverse,
+            size: Size::new(Val::Auto, Val::Auto),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            align_content: AlignContent::Center,
+            ..Default::default()
+        },
+        color: Color::rgb(0.9, 0.9, 0.9).into(),
+        ..Default::default()
+    }).with_children(|parent| {
+        parent.spawn_bundle(NodeBundle {
+            style: Style {
+                position_type: PositionType::Relative,
+                position: Rect {
+                    ..Default::default()
+                },
+                margin: Rect::all(Val::Px(20.0)),
+                ..Default::default()
+            },
+            color: Color::rgb(0.0, 0.0, 0.0).into(),
+            ..Default::default()
+        }).with_children(|parent| {
+            // text
+            parent.spawn_bundle(TextBundle {
+                style: Style {
+                    margin: Rect::all(Val::Px(5.0)),
+                    ..Default::default()
+                },
+                text: Text::with_section(
+                          "0",
+                          TextStyle {
+                              font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                              font_size: 30.0,
+                              color: Color::WHITE,
+                          },
+                          Default::default(),
+                      ),
+                      ..Default::default()
+            }).insert(Score {});
+        });
+    });
+}
+
 fn spawn_container(mut commands: Commands, asset_server: Res<AssetServer>) {
-    commands
+    let game_entity = commands
         .spawn_bundle(NodeBundle {
             style: Style {
                 position_type: PositionType::Absolute,
@@ -354,14 +530,19 @@ fn spawn_container(mut commands: Commands, asset_server: Res<AssetServer>) {
         }).with_children(|parent| {
             spawn_keyboard(parent, &asset_server);
             spawn_grid(parent, &asset_server);
-        });
+            spawn_score(parent, &asset_server);
+        }).id();
+
+    commands.insert_resource(GameContainer {
+        game_container_entity: game_entity
+    })
 }
 
-fn setup(mut state: ResMut<State>, asset_server: Res<AssetServer>) {
+fn setup(mut state: ResMut<GameState>, asset_server: Res<AssetServer>) {
     state.handle = asset_server.load("words.dict");
 }
 
-fn score_letter(state: &ResMut<State>, letter: &char, row: usize, col: usize) -> Option<u32> {
+fn score_letter(state: &ResMut<GameState>, letter: &char, row: usize, col: usize) -> Option<u32> {
     if state.row == row {
         return None
     } else {
@@ -386,7 +567,7 @@ fn score_letter(state: &ResMut<State>, letter: &char, row: usize, col: usize) ->
     }
 }
 
-fn score_key(state: &ResMut<State>, letter: &String) -> Option<u8> {
+fn score_key(state: &ResMut<GameState>, letter: &String) -> Option<u8> {
     if let Some(word) = &state.word {
         let guesses: String = state.guesses.iter().fold(String::new(), |mut guess_set, guess| {
             guess_set.push_str(guess.as_str());
@@ -418,7 +599,8 @@ fn score_key(state: &ResMut<State>, letter: &String) -> Option<u8> {
 fn check_keyboard(
     mut key_query: Query<( &Parent, &mut Text, &Key)>,
     mut p_query: Query<&mut UiColor>,
-    state: ResMut<State>,
+    state: ResMut<GameState>,
+    mut app_state: ResMut<State<AppState>>,
 ) {
     for ( parent, _, key) in key_query.iter_mut() {
         let score = score_key(&state, &key.key);
@@ -439,25 +621,14 @@ fn check_keyboard(
             }
         }
     }
+    app_state.set(AppState::CheckWin);
 }
-
-fn run_if_scoring(
-    mut run_state: ResMut<RunState>,
-) -> ShouldRun
-{
-    if run_state.run_state == GameRunState::Scoring {
-        ShouldRun::Yes
-    } else {
-        ShouldRun::No
-    }
-}
-
 
 fn check_guesses(
     mut text_query: Query<( &Parent, &mut Text, &Cell )>,
     mut p_query: Query<&mut UiColor>,
-    state: ResMut<State>,
-    mut run_state: ResMut<RunState>
+    state: ResMut<GameState>,
+    mut app_state: ResMut<State<AppState>>,
 ) {
     for ( parent, mut text, cell ) in text_query.iter_mut() {
         if let Some(g) = &cell.guess {
@@ -481,22 +652,30 @@ fn check_guesses(
             }
         }
     }
-    run_state.run_state = GameRunState::Playing;
+    app_state.set(AppState::CheckWin);
 }
 
 fn update_text(
-    mut text_query: Query<( &Parent, &mut Text, &Cell )>,
-    mut run_state: ResMut<RunState>
+    mut text_query: Query<( &mut Text, &Cell ), Changed<Cell>>,
 ) {
-    for ( parent, mut text, cell ) in text_query.iter_mut() {
+    for ( mut text, cell ) in text_query.iter_mut() {
         if let Some(g) = &cell.guess {
             text.sections[0].value = g.to_string();
         }
     }
-    run_state.run_state = GameRunState::Playing;
 }
 
-fn handle_letter(query: &mut Query<&mut Cell>, state: &mut ResMut<State>, letter: char) {
+fn update_score(
+    mut text_query: Query<( &mut Text, &Score)>,
+    game_state: Res<GameState>
+) {
+    println!("score: {}", game_state.wins);
+    for ( mut text, _) in text_query.iter_mut() {
+        text.sections[0].value = format!("{}", game_state.wins);
+    }
+}
+
+fn handle_letter(query: &mut Query<&mut Cell>, state: &mut ResMut<GameState>, letter: char) {
     let cell = query.iter_mut().find(|cell| {
         cell.row == state.row && cell.column == state.column
     });
@@ -512,12 +691,12 @@ fn handle_letter(query: &mut Query<&mut Cell>, state: &mut ResMut<State>, letter
     }
 }
 
-fn update_guesses(
+fn handle_keyboard(
     mut query: Query<&mut Cell>,
-    mut state: ResMut<State>,
+    mut state: ResMut<GameState>,
     mut key_evr: EventReader<KeyboardInput>,
-    mut run_state: ResMut<RunState>,
     custom_assets: ResMut<Assets<CustomAsset>>,
+    mut app_state: ResMut<State<AppState>>,
     ) {
     use bevy::input::ElementState;
 
@@ -611,7 +790,7 @@ fn update_guesses(
                         handle_letter(&mut query, &mut state, 'z');
                     }
                     Some(KeyCode::Return) => {
-                        submit_guess(&mut state, &custom_assets, &mut run_state);
+                        submit_guess(&mut state, &custom_assets, &mut app_state);
                     }
                     _ => {
                     }
@@ -624,9 +803,9 @@ fn update_guesses(
 }
 
 fn submit_guess(
-    state: &mut ResMut<State>,
+    state: &mut ResMut<GameState>,
     custom_assets: &ResMut<Assets<CustomAsset>>,
-    run_state: &mut ResMut<RunState>
+    app_state: &mut ResMut<State<AppState>>,
     ) {
     println!("{:?}", state);
     if state.column == 5 {
@@ -636,28 +815,101 @@ fn submit_guess(
             if dict.words.contains(&state.guess) {
                 let guess = state.guess.clone();
                 state.guesses.push(guess);
-                state.guess = String::new();
                 state.row += 1;
                 state.column = 0;
-                run_state.run_state = GameRunState::Scoring;
+                app_state.set(AppState::Loading);
             }
         }
     }
 }
 
-fn print_on_load(mut state: ResMut<State>, custom_assets: ResMut<Assets<CustomAsset>>) {
+fn init_game(
+    mut state: ResMut<GameState>,
+    custom_assets: ResMut<Assets<CustomAsset>>,
+    mut app_state: ResMut<State<AppState>>
+    ) {
     let custom_asset = custom_assets.get(&state.handle);
-    if state.printed || custom_asset.is_none() {
-        return;
-    }
 
     if let Some(dict) = custom_asset {
         let num = rand::thread_rng().gen_range(0, dict.words.len() as i32);
-        state.printed = true;
         if let Some(word) = dict.words.get(num as usize) {
             state.word = Some(word.clone());
+            app_state.set(AppState::Playing).expect("Could not start game!");
         }
     }
+
+}
+
+fn check_win(
+    mut state: ResMut<GameState>,
+    mut app_state: ResMut<State<AppState>>,
+    ) {
+    if let Some(w) = &state.word {
+        println!("{:?} {} {}", w.eq(&state.guess), w, &state.guess);
+        if w.eq(&state.guess) {
+            app_state.set(AppState::Win);
+        } else if state.row == 6 {
+            app_state.set(AppState::Fail);
+        } else {
+            app_state.set(AppState::Playing);
+        }
+        state.guess = String::new();
+    }
+}
+
+fn show_win_notice(
+    mut query: Query<(With<WinNotice>, &Children)>,
+    mut q_text: Query<&mut Text>, 
+    state: Res<GameState>,
+    app_state: Res<State<AppState>>,
+    ) {
+    for ( _, children) in query.iter_mut() {
+        for &child in children.iter() {
+            let text = q_text.get_mut(child);
+            println!("{:?} node", text);
+            if let Ok(mut t) = text {
+                if *app_state.current() == AppState::Win{
+                    t.sections[0].value = format!("The word was: {}. Congrats!\nStreak {} (nice!)\n(click)", state.word.clone().unwrap(), state.wins + 1);
+                    
+                } else {
+                    t.sections[0].value = format!("Oh no! The word was: {}\n(click)", state.word.clone().unwrap());
+                    t.sections[1].value = String::from("(click)");
+                }
+            }
+        }
+
+    }
+}
+
+fn handle_accept_win(
+    mut interaction_query: Query<
+        (&Interaction, &Children),
+        (Changed<Interaction>, With<Button>),
+    >,
+    mut app_state: ResMut<State<AppState>>,
+    mut game_state: ResMut<GameState>,
+) {
+    for (interaction, _) in interaction_query.iter_mut() {
+        match *interaction {
+            Interaction::Clicked => {
+                game_state.row = 0;
+                game_state.column = 0;
+                game_state.guesses = Vec::new();
+                game_state.wins += 1;
+                app_state.set(AppState::Init).expect("Failed to transition to init");
+            }
+            _ => {
+            }
+        }
+    }
+}
+
+fn cleanup_win_notice(mut commands: Commands, win_notice_data: Res<WinNoticeMenu>) {
+    commands.entity(win_notice_data.win_notice_entity).despawn_recursive();
+}
+
+fn cleanup_game_container(mut commands: Commands, game_container_entity: Res<GameContainer>) {
+    commands.entity(game_container_entity.game_container_entity).despawn_recursive();
 }
 
 fn setup_camera(mut commands: Commands) {
