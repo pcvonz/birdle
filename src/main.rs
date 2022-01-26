@@ -1,7 +1,7 @@
 use bevy::{
     asset::{AssetLoader, LoadContext, LoadedAsset},
     prelude::*,
-    reflect::{TypeUuid, erased_serde::private::serde::de::value},
+    reflect::TypeUuid,
     utils::BoxedFuture,
 };
 use rand::Rng;
@@ -209,7 +209,7 @@ fn spawn_keyboard(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
         "k",
         "l",
         " ",
-        "⬾",
+        "←",
         "z",
         "x",
         "c",
@@ -267,7 +267,7 @@ fn spawn_keyboard(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
                 text: Text::with_section(
                           key,
                           TextStyle {
-                              font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                              font: asset_server.load("fonts/FiraCode-Bold.ttf"),
                               font_size: 30.0,
                               color: Color::WHITE,
                           },
@@ -301,10 +301,12 @@ fn handle_button(
                         let c = text.sections[0].value.chars().next().expect("Char!");
                         if c == '⏎' {
                             submit_guess(&mut state, &custom_assets, &mut app_state);
-                        } else if c == '⬾' {
-                            state.column -= 1;
-                            handle_letter(&mut cell_query, &mut state, ' ');
-                            state.column -= 1;
+                        } else if c == '←' {
+                            if state.column > 0 {
+                                state.column -= 1;
+                                handle_letter(&mut cell_query, &mut state, ' ');
+                                state.column -= 1;
+                            }
                         } else {
                             handle_letter(&mut cell_query, &mut state, c);
                         }
@@ -359,7 +361,7 @@ fn spawn_win_notice(mut commands: Commands, asset_server: Res<AssetServer>) {
                     text: Text::with_section(
                               "",
                               TextStyle {
-                                  font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                                  font: asset_server.load("fonts/FiraCode-Bold.ttf"),
                                   font_size: 30.0,
                                   color: Color::rgb(0.2, 0.2, 0.2),
                               },
@@ -441,7 +443,7 @@ fn spawn_grid(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
                             text: Text::with_section(
                                       "",
                                       TextStyle {
-                                          font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                                          font: asset_server.load("fonts/FiraCode-Bold.ttf"),
                                           font_size: 30.0,
                                           color: Color::WHITE,
                                       },
@@ -498,7 +500,7 @@ fn spawn_score(parent: &mut ChildBuilder, asset_server: &Res<AssetServer>) {
                 text: Text::with_section(
                           "0",
                           TextStyle {
-                              font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                              font: asset_server.load("fonts/FiraCode-Bold.ttf"),
                               font_size: 30.0,
                               color: Color::WHITE,
                           },
@@ -639,7 +641,7 @@ fn check_guesses(
                 Ok(mut p) => {
                     if let Some(s) = score {
                         if s == 1 {
-                            p.0 = Color::YELLOW;
+                            p.0 = Color::rgb(0.8, 0.8, 0.0);
                         }
                         if s == 2 {
                             p.0 = Color::GREEN;
@@ -669,7 +671,6 @@ fn update_score(
     mut text_query: Query<( &mut Text, &Score)>,
     game_state: Res<GameState>
 ) {
-    println!("score: {}", game_state.wins);
     for ( mut text, _) in text_query.iter_mut() {
         text.sections[0].value = format!("{}", game_state.wins);
     }
@@ -686,7 +687,6 @@ fn handle_letter(query: &mut Query<&mut Cell>, state: &mut ResMut<GameState>, le
             state.guess.push(letter);
         } else {
             state.guess.pop();
-            println!("{}", state.guess);
         }
     }
 }
@@ -807,7 +807,6 @@ fn submit_guess(
     custom_assets: &ResMut<Assets<CustomAsset>>,
     app_state: &mut ResMut<State<AppState>>,
     ) {
-    println!("{:?}", state);
     if state.column == 5 {
         let custom_asset = custom_assets.get(&state.handle);
 
@@ -845,7 +844,6 @@ fn check_win(
     mut app_state: ResMut<State<AppState>>,
     ) {
     if let Some(w) = &state.word {
-        println!("{:?} {} {}", w.eq(&state.guess), w, &state.guess);
         if w.eq(&state.guess) {
             app_state.set(AppState::Win);
         } else if state.row == 6 {
@@ -866,14 +864,12 @@ fn show_win_notice(
     for ( _, children) in query.iter_mut() {
         for &child in children.iter() {
             let text = q_text.get_mut(child);
-            println!("{:?} node", text);
             if let Ok(mut t) = text {
                 if *app_state.current() == AppState::Win{
                     t.sections[0].value = format!("The word was: {}. Congrats!\nStreak {} (nice!)\n(click)", state.word.clone().unwrap(), state.wins + 1);
                     
                 } else {
                     t.sections[0].value = format!("Oh no! The word was: {}\n(click)", state.word.clone().unwrap());
-                    t.sections[1].value = String::from("(click)");
                 }
             }
         }
@@ -895,7 +891,11 @@ fn handle_accept_win(
                 game_state.row = 0;
                 game_state.column = 0;
                 game_state.guesses = Vec::new();
-                game_state.wins += 1;
+                if *app_state.current() == AppState::Win {
+                    game_state.wins += 1;
+                } else {
+                    game_state.wins = 0;
+                }
                 app_state.set(AppState::Init).expect("Failed to transition to init");
             }
             _ => {
