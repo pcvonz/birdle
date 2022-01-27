@@ -9,6 +9,10 @@ edition = "2021"
 rand = {version = "0.7.3",  features = ["wasm-bindgen"] }
 anyhow = "1.0.53"
 dict = {git = "https://github.com/freedict/libdict.git"}
+wasm-bindgen-futures = "0.4.24"
+wasm-bindgen = { version = "0.2.74", features = ["serde-serialize"]  }
+serde = { version = "1.0.80", features = ["derive"] }
+serde_derive = "^1.0.59"
 
 [dependencies.bevy]
 default-features = false
@@ -29,3 +33,14 @@ features = [
 
 [target.wasm32-unknown-unknown]
 runner = "wasm-server-runner"
+
+[dependencies.web-sys]
+version = "0.3.4"
+features = [
+  'Storage',
+  'Document',
+  'Element',
+  'HtmlElement',
+  'Node',
+  'Window',
+]

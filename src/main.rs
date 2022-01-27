@@ -6,6 +6,9 @@ use bevy::{
 };
 use rand::Rng;
 use bevy::input::keyboard::KeyboardInput;
+use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
+use web_sys::Storage;
 
 #[derive(Debug, TypeUuid)]
 #[uuid = "39cadc56-aa9c-4543-8640-a018b74b5052"]
@@ -62,6 +65,8 @@ fn main() {
         .add_startup_system(setup_camera)
         .insert_resource(WindowDescriptor {
             vsync: false, // This is needed because of an issue with wgpu amdvlk
+            width: 550.0,
+            height: 570.0,
             ..Default::default()
         })
     .add_plugins(DefaultPlugins)
@@ -855,6 +860,25 @@ fn check_win(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run(word: String) -> Result<(), ()> {
+    Ok(())
+}
+
+#[wasm_bindgen]
+#[cfg(target_arch = "wasm32")]
+pub fn run(word: String) -> Result<(), JsValue> {
+    // Use `web_sys`'s global `window` function to get a handle on the global
+    // window object.
+    // note the double unwrap because local_storage() returns Result<Option<...>, ...>
+    let local_storage = web_sys::window().unwrap().local_storage().unwrap().unwrap();
+
+    let value = local_storage.set_item("word", word.as_str()).unwrap();
+    // Manufacture the element we're gonna append
+    
+    Ok(())
+}
+
 fn show_win_notice(
     mut query: Query<(With<WinNotice>, &Children)>,
     mut q_text: Query<&mut Text>, 
@@ -867,12 +891,15 @@ fn show_win_notice(
             if let Ok(mut t) = text {
                 if *app_state.current() == AppState::Win{
                     t.sections[0].value = format!("The word was: {}. Congrats!\nStreak {} (nice!)\n(click)", state.word.clone().unwrap(), state.wins + 1);
-                    
+
                 } else {
                     t.sections[0].value = format!("Oh no! The word was: {}\n(click)", state.word.clone().unwrap());
                 }
             }
         }
+    }
+    if let Err(er) = run(state.word.clone().unwrap()) {
+        println!("Oh no!");
 
     }
 }
